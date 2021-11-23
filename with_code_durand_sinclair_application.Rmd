@@ -1,0 +1,378 @@
+---
+title: "Data Analyst Skills Test (HSM2)"
+author: "Durand Sinclair"
+date: "20/11/2021"
+theme: yeti
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+The following is Durand Sinclair's answers to take home test HSM2, which involves analysing simulated lung cancer data and generating visualisations. 
+
+
+```{r prep, echo=TRUE, results='hide',warning=FALSE, message=FALSE}
+# 0.  PREPARE ENVIRONMENT -------------------------------------------------
+    
+    # 0.1 Clear global environment ----
+    rm(list = ls()) # Clears global environment
+    gc() # Clears memory
+    cat("\014") # Clear console
+
+    # 0.2 Load libraries ----
+    library(tidyverse) # Hadley Wickham's best libraries
+    library(here) # File system navigation
+    library(formattable) # Nicely formatted tables
+    
+    # 0.3 Name our colour palette ----
+    customGreen0 = "#DeF7E9"
+    customGreen = "#71CA97"
+    customRed = "#ff7f7f"
+    
+# 1.  GET DATA ------------------------------------------------------------
+
+    # Note: Synthetic cancer data comes from
+    # https://simulacrum.healthdatainsight.org.uk/
+    
+    # 1.1 Download data if it's not on disk ----
+    if (!dir.exists(here::here("data",
+                               "simulacrum_release_v1.2.0.2017"
+                               )
+                    )
+        ) {
+        url <- paste0(
+            "https://simulacrumhdi.s3.eu-west-2.amazonaws.com/",
+            "simulacrum_release_v1.2.0.2017.zip"
+        )
+        temp_zipped <- tempfile()        
+        temp_unzipped <- tempfile()
+        download.file(url = url, 
+                      destfile = temp_zipped,
+                      timeout = max(120, getOption("timeout"))
+        )
+        # unzip(zipfile = temp_zipped, exdir = temp_unzipped)
+        unzip(zipfile = temp_zipped, exdir = here::here("data"))
+        unlink(c(temp_zipped, temp_unzipped))
+    } 
+    
+    # 1.2 Load tables from disk ----
+    patient_df_raw <- read_csv(here::here(
+        "data",
+        "simulacrum_release_v1.2.0.2017",
+        "data",
+        "sim_av_patient.csv"
+    ))
+    tumour_df_raw <- read.csv(here::here(
+        "data",
+        "simulacrum_release_v1.2.0.2017",
+        "data",
+        "sim_av_tumour.csv"
+    ))
+    vital_status_lookup <- read.csv(here::here(
+        "data",
+        "simulacrum_release_v1.2.0.2017",
+        "data_dictionary_files",
+        "zvitalstatus_lookup.csv"
+    ))
+    sex_lookup <- read.csv(here::here(
+        "data",
+        "simulacrum_release_v1.2.0.2017",
+        "data_dictionary_files",
+        "zsex_lookup.csv"
+    )) 
+    type_lookup <- read.csv(here::here(
+        "data",
+        "simulacrum_release_v1.2.0.2017",
+        "data_dictionary_files",
+        "zicd_lookup.csv"
+    ))
+    ethnicity_lookup <- read.csv(here::here(
+        "data",
+        "ethnicity_lookup.csv"
+    ))
+```
+
+The patient data set contains 2,200,626 unique Patient IDs.
+The tumour data set contains 2,200,626 unique Patient IDs, but 2,371,281 unique tumours, so some people got cancer more than once.
+
+```{r eda, echo=TRUE, include=FALSE}
+# 2) EXPLORE DATA  --------------------------------------------
+    # Note: Lung Cancer patients are: SITE_ICD10_O2_3CHAR= C34
+
+    
+    # Let's see what the tables are
+    glimpse(tumour_df_raw)
+    skimr::skim(tumour_df_raw)
+    length(unique(tumour_df_raw$PATIENTID))
+    
+    # The tumour dataset contains
+    #   * 2.371,281 rows
+    #   * 2,200,626 unique patients
+    
+    glimpse(patient_df_raw)
+    length(unique(patient_df_raw$PATIENTID))
+    
+    # The patient dataset contains
+    #   * 2,200,626 rows
+    #   * 2,200,626 unique patients
+```    
+# Question 1
+
+### a) What is the sex distribution of the patients?
+
+```{r q1a, echo=TRUE, warning=FALSE, message=FALSE}
+# Q1 --------------------------------------------------------------
+
+    # Q1 a) What is the sex distribution of the patients? ----
+    p <- patient_df_raw %>%
+        inner_join(sex_lookup %>% select(ZSEXID, SHORTDESC), by = c("SEX" = "ZSEXID")) %>%
+        select(Sex = SHORTDESC) %>%
+        mutate(Sex = str_to_title(Sex)) %>%
+        group_by(Sex) %>%
+        count(name = "Total") %>%
+        mutate(Total = accounting(Total, digits = 0))
+
+
+    # 
+    # # Tibble 
+    # p %>% 
+    #     tibble()
+    
+    # Formattable
+    p %>%
+        formattable(
+            align = c("c", "r"),
+            caption = "Sex distribution of all cancers",
+            list(`Sex` = formatter("span", style = ~ style(color = "grey", font.weight = "bold")),
+                 `Total` =  color_bar(customRed)
+            ))
+
+```
+
+### b) Prepare a dataset with all lung cancer patients and their cause of death
+Here are the first ten rows of that dataset.
+```{r 1b, echo=TRUE, warning=FALSE}
+# Q1 b) Prepare a dataset with all lung cancer patients and their cause of death ----
+
+    # Note: Lung cancer = SITE_ICD10_O2_3CHAR= C34
+    # Lookup table for causes of death is zicd_lookup.csv
+    # Death classification is looked up in zvitalstatus.csv
+    
+    lung_death_df <-  tumour_df_raw %>%
+        filter(SITE_ICD10_O2_3CHAR == "C34") %>%
+        select(PATIENTID) %>%
+        unique() %>%
+        left_join(patient_df_raw, by = "PATIENTID") %>%
+        filter(NEWVITALSTATUS == "D") %>%
+        select(PATIENTID, DEATHCAUSECODE_UNDERLYING) %>%
+        # 123,825
+        separate(col = "DEATHCAUSECODE_UNDERLYING", 
+                 into = c("a", "b", "c"), 
+                 sep = ",",) %>%
+        gather("key", "Code", a, b, c) %>%
+        group_by(Code) %>%
+        summarise(Total = n()) %>%
+        inner_join(y = type_lookup, by = c("Code" = "ZICDID")) %>%
+        select(Code, Description = SHORTDESC, Total) %>%
+        arrange(desc(Total)) 
+    
+    lung_death_df %>%
+        head(10) %>%
+        mutate(Total=accounting(Total, digits=0)) %>%
+        formattable(
+            align = c("c", "l", "r"),
+            caption = "Top 10 Causes Of Death For Lung Cancer Patients"
+            )
+```
+### c) Calculate the mean survival time in days for lung cancer patients
+The mean survival time for lung cancer patients is 299 days.
+```{r q1c, echo=TRUE, messages=FALSE, warning=FALSE}
+# Q1 c) Calculate the mean survival time in days for lung cancer patients ----
+    survival_time <-  tumour_df_raw %>%
+        filter(SITE_ICD10_O2_3CHAR == "C34") %>%
+        select(PATIENTID, DIAGNOSISDATEBEST) %>%
+        group_by(PATIENTID) %>%
+        summarise(diagnosis = first(DIAGNOSISDATEBEST)) %>%
+        unique() %>%
+        left_join(patient_df_raw, by = "PATIENTID") %>%
+        filter(NEWVITALSTATUS %in% c("D", "X")) %>%
+        select(PATIENTID, diagnosis, VITALSTATUSDATE) %>%
+        mutate(diagnosis = as.Date(diagnosis)) %>%
+        mutate(days = VITALSTATUSDATE - diagnosis) %>%
+        summarise(mean_survival_time_in_days = mean(days)) 
+
+    survival_time
+```
+# Question 2
+
+### a) Visualise the proportion of all ethnic groups among non-British male patients
+
+```{r 2a, echo=TRUE}
+# Q2 ----
+# Q2 a) Visualise the proportion of all ethnic groups among non-British male patients ----
+    ethnicity <- tumour_df_raw %>%
+        select(PATIENTID) %>%
+        unique() %>%
+        left_join(patient_df_raw, by = "PATIENTID") %>%
+        select(PATIENTID, SEX, ETHNICITY) %>%
+        left_join(sex_lookup, by = c("SEX" = "ZSEXID")) %>%
+        left_join(ethnicity_lookup, by = c("ETHNICITY" = "Code")) %>%
+        select(PATIENTID, Sex = SHORTDESC, Ethnicity = Description) %>%
+        filter(Sex == "MALE") %>%
+        filter(Ethnicity != "White - British") 
+
+    eth <- ethnicity %>%
+        group_by(Ethnicity) %>%
+        summarise(count = n()) %>%
+        mutate(pct = formattable::percent(round(count / sum(count), 2))) %>%
+        arrange(desc(count))
+    
+    ggplot(data = eth, mapping = aes(x = reorder(Ethnicity, pct), pct)) + 
+        geom_bar(stat = "identity") + 
+        scale_y_continuous(labels = scales::percent) +
+        coord_flip() + 
+        xlab("Ethnicity") + 
+        ylab("Percent") + 
+        ggtitle("Ethnicity of Male Cancer Patients") +
+        theme_classic()
+```
+
+### b) Find an interesting or insightful aspect you can communicate visually.
+
+```{r q2b, echo=TRUE}
+# Q2 b) Explore the data to find an interesting or insightful aspect you can communicate visually. Be creative. -----
+
+
+    # There's an idea that poorer people live shorter lives. 
+    # We can see if this is true in this dataset because the subjects are 
+    # grouped into socio-economic quintiles.
+    # Let's see if it makes a difference to rates of cancer.
+
+quintiles <- tumour_df_raw %>%
+    select(QUINTILE_2015) %>%
+    group_by(QUINTILE_2015) %>%
+    summarise(observed = n()) %>%
+    mutate(expected = nrow(tumour_df_raw)/5) %>%
+    mutate(QUINTILE_2015 = as.factor(QUINTILE_2015))
+
+ggplot(data = rev(quintiles), 
+       mapping = aes(x = QUINTILE_2015,
+                     y = observed)) +
+    geom_point() +
+    geom_hline(yintercept = quintiles$expected, colour="red") + 
+    theme_light() + 
+    #scale_y_discrete(limits=rev(levels(observed))) +
+    xlab("Socio-economic Quintile") +
+    ylab("Number of Patients") +
+    scale_y_continuous(labels = comma) +
+    scale_x_discrete(limits=rev(levels(quintiles$QUINTILE_2015))) +
+    ggtitle("Simulated Cancer Patients Tend To Be Wealthier") 
+
+```
+
+# Bonus: RBCO Chart
+The reason this job is being advertised is to recreate the Cancer Institute's RBCO charts. Here is a visualisation of the first chart in the series.
+
+```{r rbco, echo=TRUE, warning=FALSE, message=FALSE}
+# FUNCTION
+chart_2 <- function(x, text_size = 8) {
+    
+    # Define text size
+    outside_text <- text_size
+    inside_text <- 4/14 * outside_text
+    
+    # Prepare data for charting
+    df_segment_prep <- x %>%
+        mutate(min_value = redmax - (yellowmax-redmax)) %>%
+        mutate(max_value = yellowmax + (yellowmax-redmax)) %>%
+        mutate(adjusted_dot = case_when(
+            dot < redmax ~ (dot - (redmax -(yellowmax-redmax))) / 
+                (redmax - (yellowmax-redmax)),
+            dot < yellowmax ~ ((dot - redmax) / (yellowmax - redmax)) * 100 + 100,
+            dot > yellowmax ~ ((dot - yellowmax) / 
+                                   ((yellowmax + (yellowmax - redmax)) 
+                                    - yellowmax)) * 100 + 200
+        )) %>%
+        mutate(my_group = factor(case_when(
+            dot < redmax ~ "red",
+            dot < yellowmax ~ "yellow",
+            dot >= yellowmax ~ "green",
+            TRUE ~ "Unknown"
+        ))) %>%
+        mutate(disease = as.character(paste0(disease, "(%) \n(N=", n, ")"))) %>%
+        mutate(disease = factor(disease, levels = unique(disease))) %>%
+        mutate(disease = forcats::fct_rev(disease)) %>%
+        mutate(dot_label = as.character(dot))
+
+    # Draw chart
+    ggplot(df_segment_prep) +
+        
+        # Make the bars go horizontally
+        coord_flip() +
+        
+        # Set up theme to adjust background elements
+        theme(panel.grid.major = element_blank(), 
+              panel.grid.minor = element_blank(),
+              panel.background = element_blank(), 
+              axis.line = element_line(colour = "grey"),
+              axis.title = element_blank(),
+              axis.text.x = element_blank(),
+              axis.line.x = element_blank(),
+              axis.ticks.x = element_blank(),
+              legend.position = "none", 
+              text = element_text(size = outside_text)
+              ) +
+        
+        # Draw red, yellow & green lines
+        geom_segment(aes(x = disease, xend = disease, y = 0, yend=100), 
+                     color="red" ) +
+        geom_segment(aes(x = disease, xend = disease, y = 100, yend=200), 
+                     color = "orange") +
+        geom_segment(aes(x = disease, xend = disease, y = 200, yend = 300), 
+                     color = "forestgreen") +
+        geom_point(aes(x = disease, y = adjusted_dot, color = my_group)) +
+        
+        # Ticks, dots and numbers
+        geom_text(aes(
+            x = disease, 
+            y = 200,
+            label = "|",
+            alpha = 0.5
+        ), size = inside_text) +
+        geom_text(aes(
+            x = disease,
+            y = 200,
+            label = notch,
+            vjust = 2.0,
+            alpha = 0.5
+        ), size = inside_text) +
+        geom_text(aes(
+            x = disease,
+            y = adjusted_dot,
+            label = dot_label,
+            vjust = -1.0,
+            alpha = 0.5
+        ), size = inside_text) +
+        scale_colour_manual(values = c("forestgreen", "orange", "red")) +
+        
+        # Add a title at the top
+        ggtitle("Performance Snapshot", 
+                subtitle="Proportion of surgical episodes perfomed in hospitals above minimum suggested caseload")
+
+}
+
+
+# DATASET
+df_02 <- tibble(
+    disease = c("Lung", "Breast", "Gastric", "Oesophegeal", "Pancreatic", "Colon", "Rectal", "Kidney open approach", "Bladder", "Complex head and neck", "Primary Neurological", "Proportion of rectal cancer surgeries \nwith >= 12 nodes examined"),
+    n = c(101, 733, 20, 25, 38, 542, 124, 51, 31, 217, 130, 31),
+    redmax = c(78, 90, 53, 96, 88, 94, 67, 60, 10, 80, 96, 70),
+    yellowmax = c(89, 92, 81, 98, 94, 97, 76, 69, 45, 84, 98, 85),
+    dot = c(95, 91, 85, 100, 97, 99, 68, 69, 71, 84, 100, 87),
+    notch = c(89, 92, 81, 98, 94, 97, 76, 69, 45, 84, 98, 85)
+)
+
+# VISUALISATION
+chart_2(df_02, text_size = 8)
+```
